@@ -65,29 +65,18 @@ log_header[0].subheader("Detection Log")
 log_summary_ph = log_header[1].empty()
 log_download_ph = log_header[2].empty()
 
-tab_table, tab_stats = st.tabs(["Event Log", "Summary Stats"])
-table_ph = tab_table.empty()
+tab_current, tab_history, tab_stats = st.tabs(["Current Session", "Past Sessions", "Summary Stats"])
+table_ph = tab_current.empty()
+history_ph = tab_history.empty()
 stats_ph = tab_stats.empty()
 
 
-def show_log_ui(logger):
-    rows = logger.read_all()
+def render_table(rows, container):
     if not rows:
-        table_ph.info("No events recorded yet. Start surveillance to begin.")
+        container.info("No events recorded yet.")
         return
-
     recent = list(reversed(rows[-100:]))
-    log_summary_ph.caption(f"{len(rows)} events recorded")
-
-    try:
-        with open(LOG_FILE, "r") as f:
-            csv_data = f.read()
-        log_download_ph.download_button("Download CSV", csv_data, "detections.csv", "text/csv",
-                                        use_container_width=True)
-    except Exception:
-        pass
-
-    table_ph.dataframe(
+    container.dataframe(
         recent,
         use_container_width=True,
         hide_index=True,
@@ -100,19 +89,62 @@ def show_log_ui(logger):
         },
     )
 
+
+def show_log_ui(logger):
+    # current session
+    rows = logger.read_current()
+    log_summary_ph.caption(f"{len(rows)} events this session")
+
+    try:
+        with open(LOG_FILE, "r") as f:
+            csv_data = f.read()
+        log_download_ph.download_button("Download CSV", csv_data, "detections.csv", "text/csv",
+                                        use_container_width=True)
+    except Exception:
+        pass
+
+    render_table(rows, table_ph)
+
+    # past sessions
+    history_files = logger.list_history()
+    if history_files:
+        with tab_history:
+            for hf in history_files:
+                raw = hf.replace("session_", "").replace(".csv", "")
+                parts = raw.split("_")
+                date_part = parts[0] if parts else raw
+                time_part = parts[1].replace("-", ":") if len(parts) > 1 else ""
+                display = f"{date_part}  {time_part}"
+
+                past_rows = logger.read_history(hf)
+                entered = [r for r in past_rows if r.get("Event") == "entered"]
+                objects = list({r["Object"] for r in entered})
+
+                with st.expander(f"📅 {display} — {len(entered)} detections ({', '.join(objects) or 'none'})"):
+                    render_table(past_rows, st)
+    else:
+        history_ph.info("No past sessions yet. History builds up each time you restart the app.")
+
+    # stats across current session
     counts = Counter(r["Object"] for r in rows if r.get("Event") == "entered")
     sorted_counts = sorted(counts.items(), key=lambda x: -x[1])
 
     stats_col1, stats_col2 = stats_ph.columns(2)
     with stats_col1:
-        st.markdown("**Objects by frequency**")
-        for obj, count in sorted_counts:
-            st.markdown(f"- **{obj}**: {count} times")
+        st.markdown("**Objects detected this session**")
+        if sorted_counts:
+            for obj, count in sorted_counts:
+                st.markdown(f"- **{obj}**: {count} times")
+        else:
+            st.caption("Nothing yet")
     with stats_col2:
-        st.markdown("**Activity by date**")
-        dates = Counter(r["Date"] for r in rows)
-        for date, count in sorted(dates.items(), reverse=True)[:7]:
-            st.markdown(f"- {date}: **{count}** events")
+        st.markdown("**All-time stats**")
+        all_rows = list(rows)
+        for hf in history_files:
+            all_rows.extend(logger.read_history(hf))
+        all_counts = Counter(r["Object"] for r in all_rows if r.get("Event") == "entered")
+        for obj, count in sorted(all_counts.items(), key=lambda x: -x[1]):
+            st.markdown(f"- **{obj}**: {count} times")
 
 
 if run:
@@ -199,3 +231,10 @@ else:
     video_ph.info("Toggle **START SURVEILLANCE** in the sidebar to begin.")
     logger = DetectionLogger(LOG_FILE)
     show_log_ui(logger)
+
+# add history dir to gitignore
+st.markdown("""
+<style>
+    [data-testid="stMetric"] { background: #111827; border-radius: 8px; padding: 10px; }
+</style>
+""", unsafe_allow_html=True)
